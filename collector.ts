@@ -1616,6 +1616,88 @@ function opencodeHistory() {
     try { db?.close(); } catch {}
   }
 }
+// Hermes stores its conversation history in a SQLite state database
+// (~/.hermes/state.db by default). Genuine user prompts are `role='user'`
+// rows whose text is not auto-injected plumbing (cron runs, skill-loading
+// notices, group-chat framing, model-change notices, compression/tool-limit
+// boilerplate). Read the same way as opencodeHistory: read-only, bounded,
+// no symlink follow, every row defensively parsed, never fatal.
+function hermesHistory() {
+  const hermesHome = process.env.HERMES_HOME || process.env.HERMES_STATE_DIR || join(HOME, ".hermes");
+  const path = join(hermesHome, "state.db");
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile()) return { present: false };
+  } catch { return { present: false }; }
+  let db: Database | null = null;
+  try {
+    db = new Database(path, { readonly: true });
+    // Hermes timestamps are Unix SECONDS (floats), not milliseconds like the
+    // other providers' stores — convert the week boundary before comparing.
+    const start7s = Math.floor(start7 / 1000);
+    // Heatmap/counts need every user prompt of the week but only its
+    // timestamp; the detailed (text) query below is capped and feeds Recent.
+    const stampRows = db.query(`
+      SELECT m.timestamp AS ts FROM messages m
+       WHERE m.role = 'user' AND m.timestamp >= ? AND m.content IS NOT NULL AND length(m.content) > 0
+    `).all(start7s) as any[];
+    for (const row of stampRows) {
+      const ts = Number(row.ts || 0) * 1000;
+      if (ts) { bump(ts, "hermes"); cnt("hermes", ts); }
+    }
+    // Last seven days only, newest first, capped — never scan the whole table.
+    const rows = db.query(`
+      SELECT m.session_id AS session, m.timestamp AS ts, m.content AS text,
+             s.cwd AS cwd, s.git_repo_root AS repoRoot, s.profile_name AS profile,
+             s.title AS title, s.model AS model
+        FROM messages m
+        LEFT JOIN sessions s ON s.id = m.session_id
+       WHERE m.role = 'user' AND m.timestamp >= ? AND m.content IS NOT NULL
+       ORDER BY m.timestamp DESC, m.id DESC
+       LIMIT 4000
+    `).all(start7s) as any[];
+    const sessions = new Set<string>();
+    let prompts = 0;
+    for (const row of rows) {
+      const ts = Number(row.ts || 0) * 1000;
+      if (!ts) continue;
+      const text = hermesPromptText(row.text);
+      if (!text) continue;
+      prompts++;
+      const session = cleanSessionId(row.session);
+      if (session) sessions.add(session);
+      if (plausibleTimestamp(ts)) {
+        // Prefer the repo root (shortPath makes it "~/repo"), else cwd; fall
+        // back to the session title/profile so the project column isn't blank.
+        let project = shortPath(String(row.repoRoot || row.cwd || ""));
+        if (!project) project = shortPath(String(row.title || ""));
+        if (!project) project = String(row.profile || "");
+        recent.push({ provider: "hermes", ts, project, text, session, model: uiString(row.model, 80) });
+      }
+    }
+    return { present: true, prompts: Math.max(prompts, sessions.size), sessions: sessions.size };
+  } catch (error) {
+    return { present: true, prompts: 0, sessions: 0, error: String(error) };
+  } finally {
+    try { db?.close(); } catch {}
+  }
+}
+
+// A "user" row is a real prompt only when it is not auto-injected plumbing.
+// Injected rows start with a bracketed marker or are system boilerplate.
+// Returns the clean single-line prompt text, or "" for injected rows.
+export function hermesPromptText(value: unknown): string {
+  const raw = String(typeof value === "object" ? "" : (value || ""));
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/^\[(\/?)(IMPORTANT|System|Group chat|learn|Your active task list|CONTEXT COMPACTION)/i.test(text)) return "";
+  if (/^You('|’)ve reached the maximum number of tool-calling iterations/i.test(text)) return "";
+  if (/^\[ASYNC DELEGATION/i.test(text)) return "";
+  if (/^\[Your active task list was preserved across context compression\]/i.test(text)) return "";
+  // Keep the whole prompt but collapse internal whitespace for the one-line card.
+  return text.slice(0, 2000);
+}
+
 async function ollamaState() {
   const host = process.env.OLLAMA_HOST || "http://127.0.0.1:11434";
   const base = host.startsWith("http") ? host : "http://" + host;
@@ -1952,7 +2034,7 @@ async function runCollector() {
   const [cpuS, memS, diskS, netS, pingS, gpuS, sessions, ollama, externalIpS, github] = await Promise.all([
     Promise.resolve(cpu()), Promise.resolve(mem()), disk(), net(), ping(), gpu(), liveSessions(pids), ollamaState(), externalIp(), githubActivity(),
   ]);
-  const claude = claudeHistory(), codex = codexHistory(), grok = grokHistory(), opencode = opencodeHistory();
+  const claude = claudeHistory(), codex = codexHistory(), grok = grokHistory(), opencode = opencodeHistory(), hermes = hermesHistory();
   recent.sort((a, b) => b.ts - a.ts);
   for (const entry of recent) entry.activityCell = activityCellIndex(entry.ts, heatDays);
   inferSessionIdsFromRecent(sessions, recent);
@@ -1984,7 +2066,7 @@ async function runCollector() {
       attention: sessions.filter((s: any) => s.attention),
       events: notificationState.events,
       collisions: repoCollisions(sessions),
-      counts, providers: { claude, codex, grok, opencode, ollama }, usage: agentsUsage(),
+      counts, providers: { claude, codex, grok, opencode, hermes, ollama }, usage: agentsUsage(),
       usageDays: heatDays.map(localDayKey),
       heatmap: { start: start7, days: heatDays, cells: heat.map(c => [c.n, c.p]) },
       github,

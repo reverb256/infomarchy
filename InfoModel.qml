@@ -17,6 +17,20 @@ Item {
   // Resolve the script itself so a missing trailing slash on a directory URL
   // cannot produce ".../nixfred.infomarchicollector.ts".
   property string collectorPath: Qt.resolvedUrl("collector.ts").toString().replace(/^file:\/\//, "")
+  property string fleetPath: Qt.resolvedUrl("fleet.ts").toString().replace(/^file:\/\//, "")
+  // Fleet mode: when a fleet.toml sits next to the plugin, run fleet.ts
+  // instead of the local collector. The collector process arg switches hosts;
+  // no deep QML bindings (a previous var-binding attempt crashed Quickshell).
+  property string hostFilter: ""
+  // Fleet mode detection — flat bool set by a probe Process (test -f), never
+  // a deep computed binding.
+  property bool fleetEnabled: false
+  property bool fleetChecked: false
+  readonly property string fleetConfigPath: {
+    var p = root.collectorPath
+    var slash = p.lastIndexOf("/")
+    return slash >= 0 ? p.slice(0, slash + 1) + "fleet.toml" : "fleet.toml"
+  }
   property string resumePath: Qt.resolvedUrl("resume-session.ts").toString().replace(/^file:\/\//, "")
   property string sessionActionsPath: Qt.resolvedUrl("session-actions.ts").toString().replace(/^file:\/\//, "")
   property string copyTextPath: Qt.resolvedUrl("copy-text.ts").toString().replace(/^file:\/\//, "")
@@ -139,7 +153,8 @@ Item {
     property bool frameComplete: false
     readonly property int maxOutputBytes: 2 * 1024 * 1024
     readonly property int maxStderrBytes: 4096
-    command: root.demoMode ? ["bun", root.collectorPath, "--id", root.instance, "--demo"] : ["bun", root.collectorPath, "--id", root.instance]
+    command: root.demoMode ? ["bun", root.collectorPath, "--id", root.instance, "--demo"]
+      : (root.fleetEnabled ? ["bun", root.fleetPath] : ["bun", root.collectorPath, "--id", root.instance])
 
     function fail(message) {
       protocolFailed = true
@@ -211,11 +226,32 @@ Item {
     }
   }
   function refresh() {
-    if (!root.active || collector.running || bunProbe.running) return
+    if (!root.active || collector.running || bunProbe.running || fleetProbe.running) return
+    // First tick: probe for bun + fleet.toml before choosing the collector.
+    if (!root.bunChecked) { bunProbe.running = true; return }
+    if (!root.fleetChecked) { fleetProbe.running = true; return }
     // Once bun is known-good, skip the probe; re-probe every tick only while
     // it is missing so an install is picked up without a shell restart.
     if (root.bunChecked && root.bunAvailable) collector.running = true
     else bunProbe.running = true
+  }
+  // Set the UI host filter. Empty = show all hosts (unified). This is a pure
+  // UI filter over the already-merged fleet snapshot — no collector restart,
+  // because fleet.ts always emits every host merged into one snapshot.
+  function setHost(host) {
+    var name = String(host || "").trim()
+    root.hostFilter = (name === root.hostFilter) ? "" : name
+  }
+  function cycleHost() {
+    var hosts = (root.snap && root.snap.fleet && root.snap.fleet.hosts) || []
+    if (!hosts.length) return
+    var current = root.hostFilter
+    var idx = -1
+    for (var i = 0; i < hosts.length; i++) if (String(hosts[i].host || hosts[i].label) === current) { idx = i; break }
+    // Order: current → next host → (after last) back to "" (all hosts).
+    if (current === "") root.hostFilter = String(hosts[0].host || hosts[0].label || "")
+    else if (idx >= 0 && idx < hosts.length - 1) root.hostFilter = String(hosts[idx + 1].host || hosts[idx + 1].label || "")
+    else root.hostFilter = ""
   }
   Process {
     id: bunProbe
@@ -225,6 +261,17 @@ Item {
       root.bunAvailable = exitCode === 0
       if (root.bunAvailable) { if (!collector.running) collector.running = true }
       else root.error = root.missingDependencyHint
+    }
+  }
+  // Probe once for a fleet.toml next to the plugin. When present, the model
+  // runs fleet.ts (local + remote collectors) instead of the local collector.
+  Process {
+    id: fleetProbe
+    command: ["sh", "-c", "test -f \"$1\"", "sh", root.fleetConfigPath]
+    onExited: function(exitCode) {
+      root.fleetEnabled = exitCode === 0
+      root.fleetChecked = true
+      if (root.fleetEnabled && !collector.running && !bunProbe.running) collector.running = true
     }
   }
 

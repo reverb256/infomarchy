@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join, relative } from "path";
-import { providerOf, titleLooksBusy, cmdIsTurnInhibitor, sessionIdFrom, sessionHostsFromEnvironment, tmuxSocketFromEnvironment, parseTmuxPanes, parseTmuxClients, tmuxPaneForAncestors, linkRecentToLive, inferSessionIdsFromRecent, attachSessionTopics, localSessionSummary, cleanGeneratedSummary, activityCellIndex, parseExternalIpTrace, externalIpCacheFresh, frameSnapshot, parseJsonBounded, readRegularFileLimited, safePrompt, sessionPresentation, writePrivateStateFile, decodeProjectDir, dropPartialFirstLine, readHistoryTail, readRegularFileHead, rolloutSessionId, rolloutCwd, topicCacheHit, topicRetryBlocked, pruneTopicCache, reapStateTempFiles, parseGpuLine, parseDfRows, plausibleTimestamp, normalizeUsage, normalizeUsageLimit, ollamaHostIsLocal, topicRefinementAllowed, terminate, rateForModel, estimateValue, valueSummary, alignDailyTokens, localDayKey, loadPricing, todayValueEstimate, herdrSocketFromEnvironment, herdrClientPids, herdrWindowFor, boomuxClientShellId, boomuxWindowFor, backgroundDaemonKind, parseClaudeAgents, sessionStaleness, STALE_AFTER_MS } from "./collector.ts";
+import { providerOf, hermesPromptText, titleLooksBusy, cmdIsTurnInhibitor, sessionIdFrom, sessionHostsFromEnvironment, tmuxSocketFromEnvironment, parseTmuxPanes, parseTmuxClients, tmuxPaneForAncestors, linkRecentToLive, inferSessionIdsFromRecent, attachSessionTopics, localSessionSummary, cleanGeneratedSummary, activityCellIndex, parseExternalIpTrace, externalIpCacheFresh, frameSnapshot, parseJsonBounded, readRegularFileLimited, safePrompt, sessionPresentation, writePrivateStateFile, decodeProjectDir, dropPartialFirstLine, readHistoryTail, readRegularFileHead, rolloutSessionId, rolloutCwd, topicCacheHit, topicRetryBlocked, pruneTopicCache, reapStateTempFiles, parseGpuLine, parseDfRows, plausibleTimestamp, normalizeUsage, normalizeUsageLimit, ollamaHostIsLocal, topicRefinementAllowed, terminate, rateForModel, estimateValue, valueSummary, alignDailyTokens, localDayKey, loadPricing, todayValueEstimate, herdrSocketFromEnvironment, herdrClientPids, herdrWindowFor, boomuxClientShellId, boomuxWindowFor, backgroundDaemonKind, parseClaudeAgents, sessionStaleness, STALE_AFTER_MS } from "./collector.ts";
 
 const testRoot = mkdtempSync(join(tmpdir(), "infomarchy-test-"));
 const historyFixture = join(testRoot, "history");
@@ -45,6 +45,28 @@ describe("providerOf", () => {
 
   test("recognizes Hermes as an interactive agent provider", () => {
     expect(providerOf(["/home/user/.hermes/bin/hermes"])).toBe("hermes");
+  });
+});
+
+describe("hermes prompt history", () => {
+  test("keeps genuine user prompts, single-lined", () => {
+    expect(hermesPromptText("  check all hashrates  ")).toBe("check all hashrates");
+    expect(hermesPromptText("pull the repo and follow the conventions properly")).toBe("pull the repo and follow the conventions properly");
+    // Collapses internal newlines for the one-line card.
+    expect(hermesPromptText("line one\nline two\n\nline three")).toBe("line one line two line three");
+    // Long prompts survive up to the cap; card redacts at 140 anyway.
+    expect(hermesPromptText("x".repeat(5000)).length).toBe(2000);
+  });
+  test("rejects auto-injected plumbing rows that are not user prompts", () => {
+    expect(hermesPromptText("[IMPORTANT: You are running as a scheduled cron job. DELIVERY: ...]")).toBe("");
+    expect(hermesPromptText("[Group chat: \"Hermes, Caio\"] You are @hermes, one participant...")).toBe("");
+    expect(hermesPromptText("[System: The active model for this chat has changed to deepseek/deepseek-v4-flash via provider]")).toBe("");
+    expect(hermesPromptText("[/learn] The user wants you to learn a reusable skill from the source(s) they de...")).toBe("");
+    expect(hermesPromptText("[Your active task list was preserved across context compression]\n- [>] p1-btrfs.")).toBe("");
+    expect(hermesPromptText("You've reached the maximum number of tool-calling iterations allowed. Please provide a final response...")).toBe("");
+    expect(hermesPromptText("[ASYNC DELEGATION BATCH COMPLETE — deleg_5e07b9f5] A background fan-out of 1 subagent(s)")).toBe("");
+    expect(hermesPromptText("")).toBe("");
+    expect(hermesPromptText(null)).toBe("");
   });
 });
 

@@ -96,7 +96,7 @@ Item {
   readonly property var ai: snap.ai || ({})
   readonly property var allSessions: ai.sessions || []
   readonly property var projects: ai.projects || []
-  readonly property var sessions: !projectFilter ? allSessions : allSessions.filter(function(item) { return projectMatches(item) })
+  readonly property var sessions: (!projectFilter && !desk.hostFilter) ? allSessions : allSessions.filter(function(item) { return (!projectFilter || projectMatches(item)) && (!desk.hostFilter || String(item.hostLabel || "") === String(desk.hostFilter)) })
   readonly property var activeNotificationProviders: {
     var result = []
     for (var i = 0; i < allSessions.length; i++) {
@@ -123,6 +123,7 @@ Item {
   readonly property var visibleRecentTasks: {
     var rows = ai.recent || []
     if (projectFilter) rows = rows.filter(function(row) { return projectMatches(row) })
+    if (desk.hostFilter) rows = rows.filter(function(row) { return String(row.hostLabel || "") === String(desk.hostFilter) })
     var chosen = !activityFilterActive ? rows : rows.filter(function(row) {
       return (activityCellFilter < 0 || Number(row.activityCell) === activityCellFilter) &&
         (!activityProviderFilter || String(row.provider) === activityProviderFilter)
@@ -757,6 +758,34 @@ Item {
           tone: view.desk.cyan
           MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: view.projectFilter = "" }
         }
+        // Fleet host filter — unified view by default. "ALL" shows every
+        // host merged; clicking a host filters sessions/recent to that host.
+        Repeater {
+          visible: (view.snap && view.snap.fleet && view.snap.fleet.hosts || []).length > 1
+          model: {
+            var hosts = (view.snap && view.snap.fleet && view.snap.fleet.hosts) || []
+            var out = [{ host: "", label: "ALL", remote: false }]
+            for (var i = 0; i < hosts.length; i++) out.push(hosts[i])
+            return out
+          }
+          delegate: Tag {
+            required property var modelData
+            // ALL is the entry with host === "" (label is cosmetic "ALL");
+            // real hosts carry their host name in modelData.host.
+            readonly property string hostKey: String(modelData.host !== undefined && modelData.host !== null ? modelData.host : "")
+            readonly property string hostLabel: String(modelData.label || modelData.host || "ALL")
+            readonly property bool selected: hostKey === "" ? view.desk.hostFilter === "" : hostKey === view.desk.hostFilter
+            text: (selected ? "● " : "○ ") + hostLabel
+            tone: hostKey === "" ? view.desk.themeForeground : (modelData.remote ? view.desk.blue : view.desk.green)
+            color: Util.alpha(selected ? tone : view.desk.themeForeground, selected ? 0.16 : 0.04)
+            border.color: Util.alpha(selected ? tone : view.desk.themeForeground, selected ? 0.5 : 0.15)
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: view.desk.setHost(hostKey)
+            }
+          }
+        }
         // Discoverability, faint and in the strip: the two keys everyone needs.
         // On the wallpaper SUPER+D opens the desktop view; in that view it closes it.
         Tag { text: view.keyboardAvailable ? "SUPER+I HIDE DESK · SUPER+D / ESC CLOSE" : "SUPER+I HIDE DESK · SUPER+D SHOW OVER WINDOWS"; tone: view.textFaint }
@@ -846,6 +875,9 @@ Item {
                         NumberAnimation { target: dot; property: "opacity"; from: 1; to: 0.2; duration: 700 }
                         NumberAnimation { target: dot; property: "opacity"; from: 0.2; to: 1; duration: 700 } } }
                     PlainText { text: view.desk.providerLabel(sc.modelData.provider); color: sc.tone; font.family: view.mono; font.bold: true; font.pixelSize: Style.font.body }
+                    // Remote sessions come from another host via fleet.ts — the
+                    // window lives on that host, so this card is read-only.
+                    Tag { visible: sc.modelData.remote === true && !!sc.modelData.hostLabel; text: String(sc.modelData.hostLabel || ""); tone: view.desk.blue }
                     // Unattended and idle for hours: probably a zombie. Right-click → inspector → STOP / END.
                     Tag { visible: sc.modelData.stale === true; text: "STALE · idle " + view.desk.dur((Date.now() - Number(sc.modelData.idleSince || Date.now())) / 1000); tone: view.desk.yellow }
                     Item { Layout.fillWidth: true }
@@ -1143,7 +1175,7 @@ Item {
               cells: (view.ai.heatmap || {}).cells || []
               startTs: (view.ai.heatmap || {}).start || 0
               days: (view.ai.heatmap || {}).days || []
-              kinds: ["claude", "codex", "grok", "opencode", "gemini", "ollama"]
+              kinds: ["claude", "codex", "grok", "opencode", "gemini", "hermes", "ollama"]
               unit: "prompts"
               selectedCell: view.activityCellFilter
               selectedKind: view.activityProviderFilter
@@ -1282,6 +1314,7 @@ Item {
                 spacing: Style.spacing.md
                 PlainText { text: (ri.pinned ? "★" : "") + view.desk.ago(ri.modelData.ts); color: ri.pinned ? ri.tone : view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(28 * Style.fontScale); horizontalAlignment: Text.AlignRight }
                 Tag { text: view.desk.providerLabel(ri.modelData.provider); tone: view.desk.providerColor(ri.modelData.provider) }
+                Tag { visible: !!ri.modelData.hostLabel && (view.snap && view.snap.fleet && view.snap.fleet.hosts || []).length > 1; text: String(ri.modelData.hostLabel || ""); tone: view.textFaint }
                 PlainText { text: (ri.modelData.project || "").replace(/^.*\//, "") ; color: view.textDim; font.family: view.mono; font.pixelSize: Style.font.caption; Layout.preferredWidth: Math.round(110 * Style.fontScale); elide: Text.ElideLeft }
                 PlainText { Layout.fillWidth: true; text: ri.modelData.text || ""; color: view.desk.themeForeground; font.family: view.mono; font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight; maximumLineCount: 1 }
                 PlainText {
@@ -1725,6 +1758,7 @@ Item {
               Tag { visible: !!(provRow.ps.codex && provRow.ps.codex.present); text: "codex " + (provRow.ps.codex ? provRow.ps.codex.threadCount : 0) + " threads"; tone: view.desk.providerColor("codex") }
               Tag { visible: !!(provRow.ps.grok && provRow.ps.grok.present); text: "grok " + (provRow.ps.grok ? provRow.ps.grok.sessions : 0) + " sess"; tone: view.desk.providerColor("grok") }
               Tag { visible: !!(provRow.ps.opencode && provRow.ps.opencode.present); text: "opencode " + (provRow.ps.opencode ? provRow.ps.opencode.sessions : 0) + " sess"; tone: view.desk.providerColor("opencode") }
+              Tag { visible: !!(provRow.ps.hermes && provRow.ps.hermes.present); text: "hermes " + (provRow.ps.hermes ? provRow.ps.hermes.sessions : 0) + " sess"; tone: view.desk.providerColor("hermes") }
             }
           }
         }
@@ -1746,6 +1780,32 @@ Item {
           readonly property var disks: view.machine.disks || []
           readonly property var bat: view.machine.battery
           id: mc
+          // Fleet per-host strip: one compact line per machine in the fleet,
+          // so you see every box's load at a glance. The full local machine
+          // meters below stay for this (zephyr) host's detail.
+          ColumnLayout {
+            visible: (view.snap && view.snap.fleet && view.snap.fleet.hosts || []).length > 1
+            width: parent.width
+            spacing: Style.spacing.xs
+            Repeater {
+              model: (view.snap && view.snap.fleet && view.snap.fleet.hosts) || []
+              delegate: RowLayout {
+                required property var modelData
+                readonly property var fm: modelData.machine || ({})
+                readonly property var fcpu: fm.cpu || ({})
+                readonly property var fmem: fm.mem || ({})
+                readonly property var fgpu: fm.gpu || null
+                Layout.fillWidth: true
+                spacing: Style.spacing.sm
+                PlainText { text: String(modelData.label || modelData.host || ""); color: modelData.remote ? view.desk.blue : view.desk.green; font.family: view.mono; font.pixelSize: Style.font.caption; font.bold: true; Layout.preferredWidth: Math.round(64 * Style.fontScale) }
+                PlainText { text: "cpu " + view.desk.pct(fcpu.pct); color: (fcpu.pct || 0) > 85 ? view.desk.red : view.desk.blue; font.family: view.mono; font.pixelSize: Style.font.caption }
+                PlainText { text: "ram " + view.desk.pct(fmem.pct); color: (fmem.pct || 0) > 90 ? view.desk.red : view.desk.green; font.family: view.mono; font.pixelSize: Style.font.caption }
+                PlainText { text: fgpu ? "gpu " + view.desk.pct(fgpu.util) + " · " + view.desk.bytes(fgpu.memUsed) + "/" + view.desk.bytes(fgpu.memTotal) : "no gpu"; color: fgpu ? ((fgpu.util || 0) > 95 ? view.desk.yellow : view.textDim) : view.textFaint; font.family: view.mono; font.pixelSize: Style.font.caption }
+                PlainText { text: (fmem.pct !== null && fmem.pct !== undefined) ? "" : "offline"; color: view.desk.red; font.family: view.mono; font.pixelSize: Style.font.caption }
+                Item { Layout.fillWidth: true }
+              }
+            }
+          }
           // Cockpit density: two meters per row, one footer line for the scalars.
           // Seven single-line rows used to push BAT off the bottom of a 1080p desk.
           GridLayout {
