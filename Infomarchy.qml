@@ -161,6 +161,17 @@ Scope {
       infoModel.refresh()
     }
     function getDemo(): string { return root.demoMode ? "true" : "false" }
+    // Fleet host switching + introspection. Enables CLI/scripted verification
+    // and host changes without touching the wallpaper.
+    function setHost(v: string): void { infoModel.setHost(v) }
+    function getHost(): string { return infoModel.hostFilter || "" }
+    function getHosts(): string {
+      var hosts = (infoModel.snap && infoModel.snap.fleet && infoModel.snap.fleet.hosts) || []
+      var out = []
+      for (var i = 0; i < hosts.length; i++) out.push(String(hosts[i].host || hosts[i].label || ""))
+      return out.join(",")
+    }
+    function fleetMode(): string { return infoModel.fleetEnabled ? "true" : "false" }
   }
 
   Variants {
