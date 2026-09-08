@@ -1263,15 +1263,12 @@ async function liveSessions(pids: number[]) {
   const herdrClients = herdrState(winByPid);
   const boomuxClients = boomuxState(winByPid);
   for (const pid of pids) {
-    const prov = providerOf(cmdByPid.get(pid) || []); if (!prov) continue;
     const p = info(pid); if (!p) continue;
     // skip children of an already-reported agent process (subagents, helpers)
     let anc = info(p.ppid), child = false;
     while (anc && anc.pid > 1) { if (providerOf(anc.cmd)) { child = true; break; } anc = info(anc.ppid); }
-    if (child) continue;
     // Direct terminals share ancestry with the agent. Multiplexer servers do
     // not, so tmux is resolved through its pane and attached client below.
-    let w: any = windowForProcess(p.pid, winByPid);
     const environ = environOf(p.pid);
     const hosts = sessionHostsFromEnvironment(environ);
     for (const ancestor of processAncestors(p.pid).slice(1)) {
@@ -1353,7 +1350,6 @@ async function liveSessions(pids: number[]) {
       },
     });
   }
-  const sessionPids = new Set(sessions.map((s: any) => s.pid as number));
   const turnBusy = new Set<number>();
   for (const pid of pids) {
     if (!cmdIsTurnInhibitor(cmdByPid.get(pid) || [])) continue;
@@ -1363,7 +1359,6 @@ async function liveSessions(pids: number[]) {
       q = info(q.ppid);
     }
   }
-  for (const s of sessions) {
     // A tmux window title describes the pane the client is showing. For a
     // pane that is not on screen, the title is somebody else's.
     const tmuxHostOf = (s.hosts || []).find((host: any) => host.kind === "tmux");
@@ -1736,12 +1731,10 @@ function opencodeHistory() {
   let identity = "";
   try {
     const stat = lstatSync(path);
-    if (!stat.isFile()) return { present: false };
     identity = `${stat.size}:${Math.round(stat.mtimeMs)}`;
   } catch { return { present: false }; }
   let db: Database | null = null;
   try {
-    db = new Database(path, { readonly: true });
     // Heatmap/counts need every prompt of the week but only its timestamp;
     // the detailed (text) query below is capped and feeds the Recent list.
     for (const row of db.query(`
@@ -1796,16 +1789,11 @@ function opencodeHistory() {
 // notices, group-chat framing, model-change notices, compression/tool-limit
 // boilerplate). Read the same way as opencodeHistory: read-only, bounded,
 // no symlink follow, every row defensively parsed, never fatal.
-function hermesHistory() {
-  const hermesHome = process.env.HERMES_HOME || process.env.HERMES_STATE_DIR || join(HOME, ".hermes");
-  const path = join(hermesHome, "state.db");
   try {
     const stat = lstatSync(path);
-    if (!stat.isFile()) return { present: false };
   } catch { return { present: false }; }
   let db: Database | null = null;
   try {
-    db = new Database(path, { readonly: true });
     // Hermes timestamps are Unix SECONDS (floats), not milliseconds like the
     // other providers' stores — convert the week boundary before comparing.
     const start7s = Math.floor(start7 / 1000);
@@ -2070,8 +2058,21 @@ export function frameSnapshot(value: unknown): string {
   const payload = JSON.stringify(sanitized);
   if (Buffer.byteLength(payload, "utf8") > MAX_SNAPSHOT_BYTES) throw new Error("snapshot exceeded byte budget");
   const lines: string[] = [];
-  for (let offset = 0; offset < payload.length; offset += OUTPUT_FRAME_CHARS) {
-    lines.push(JSON.stringify({ v: 1, type: "chunk", data: payload.slice(offset, offset + OUTPUT_FRAME_CHARS) }));
+  // Never split a surrogate pair across chunks. A UTF-16 surrogate pair
+  // (emoji, accented char, etc.) occupies 2 code units; splitting one
+  // half into chunk N and the other into chunk N+1 makes the QML side
+  // count one fewer code unit than payload.length, which fails the
+  // frame completeness check. Walk backwards from the chunk boundary to
+  // ensure no high surrogate (0xD800-0xDBFF) sits at the last position.
+  let offset = 0;
+  while (offset < payload.length) {
+    let end = Math.min(offset + OUTPUT_FRAME_CHARS, payload.length);
+    if (end < payload.length) {
+      const lastCode = payload.charCodeAt(end - 1);
+      if (lastCode >= 0xD800 && lastCode <= 0xDBFF) end -= 1;
+    }
+    lines.push(JSON.stringify({ v: 1, type: "chunk", data: payload.slice(offset, end) }));
+    offset = end;
   }
   lines.push(JSON.stringify({ v: 1, type: "end", chars: payload.length }));
   return lines.join("\n") + "\n";
@@ -2213,13 +2214,6 @@ async function runCollector() {
   const claude = claudeHistory(), codex = codexHistory(), grok = grokHistory(), grokBot = grokBotHistory(), opencode = opencodeHistory(), hermes = hermesHistory();
   recent.sort((a, b) => b.ts - a.ts);
   for (const entry of recent) entry.activityCell = activityCellIndex(entry.ts, heatDays);
-  inferSessionIdsFromRecent(sessions, recent);
-  attachSessionTopics(sessions, recent);
-  attachGrokBotRoster(sessions, grokBot);
-  attachStaleness(sessions);
-  const topicSummaries = await refineSessionTopics(sessions, recent, ollama);
-  const notificationState = deriveNotificationEvents(prev.sessionNotifications, sessions);
-  const linkedRecent = linkRecentToLive(recent, sessions);
   const weekRecentCount = linkedRecent.filter(entry => entry.activityCell >= 0).length;
   // Default view still shows 40. Keep enough week rows in the snapshot for
   // heatmap drill-down without allowing an unbounded history payload.
@@ -2230,7 +2224,6 @@ async function runCollector() {
   let hyprLua = false;
   try { const v = parseJsonBounded(await run(["hyprctl", "version", "-j"], 800), 2048, 12) || {}; const m = String(v.tag || v.version || "").match(/(\d+)\.(\d+)/); hyprLua = !!m && (+m[1] > 0 || +m[2] >= 56); } catch {}
 
-  const snapshot = {
     ts: now, hyprLua, host: (read("/etc/hostname") || "").trim() || null, user: process.env.USER || null,
     machine: {
       cpu: { pct: cpuS.pct, load: cpuS.load, cores: cpuS.cores }, mem: memS, disks: diskS, net: netS, ping: pingS,
