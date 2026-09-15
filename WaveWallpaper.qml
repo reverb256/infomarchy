@@ -21,6 +21,12 @@ Item {
     playing: root.playing
     paused: !root.playing
     speed: 1.0
-    sourceSize: Qt.size(Math.max(1, Math.round(root.width)), Math.max(1, Math.round(root.height)))
+    // AnimatedImage scales a frame to exactly sourceSize, with no aspect
+    // correction, so a two-dimension sourceSize squashed a landscape
+    // wallpaper on the portrait output; the fill mode had nothing left to
+    // crop. Bind the height only: Qt derives the width from the source's
+    // aspect ratio, and PreserveAspectCrop crops the overflow. An unhonored
+    // binding degrades to the full-size load, which still renders correctly.
+    sourceSize: Qt.size(-1, Math.max(1, Math.round(root.height)))
   }
 }
