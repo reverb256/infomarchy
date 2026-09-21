@@ -18,6 +18,16 @@ Item {
   // field there can never receive keystrokes. The host sets this false and
   // the search box becomes a pointer to the overlay instead of a dead input.
   property bool keyboardAvailable: true
+  // Stepped attention pulse for the glow/chip/dot below: the smooth 60 fps
+  // versions re-rendered the fullscreen glass overlay every frame (~60% of a
+  // core with the desk open). One shared flip keeps the rhythm at ~1 render.
+  property bool pulseOn: false
+  Timer {
+    interval: 1200
+    running: view.visible
+    repeat: true
+    onTriggered: view.pulseOn = !view.pulseOn
+  }
   property int activityCellFilter: -1
   property string activityProviderFilter: ""
   // The forge heatmaps have no list to filter, so a selected cell is a pin
@@ -724,12 +734,7 @@ Item {
       radius: card.radius + 3
       border.width: 2
       border.color: card.glowTone
-      SequentialAnimation on opacity {
-        running: card.glow && card.visible
-        loops: Animation.Infinite
-        NumberAnimation { from: 0.12; to: 0.42; duration: 1200; easing.type: Easing.InOutSine }
-        NumberAnimation { from: 0.42; to: 0.12; duration: 1200; easing.type: Easing.InOutSine }
-      }
+      opacity: view.pulseOn ? 0.42 : 0.12
     }
     implicitHeight: col.implicitHeight + view.pad * 2
     // Swallow clicks on card chrome so the overlay's click-outside-to-close
@@ -1126,12 +1131,7 @@ Item {
     color: Util.alpha(selected ? view.desk.green : view.desk.themeForeground, selected ? 0.13 : 0.035)
     border.color: Util.alpha(selected ? view.desk.green : view.desk.themeForeground, selected ? 0.45 : 0.13)
     border.width: 1
-    SequentialAnimation on opacity {
-      running: sectionChip.needsAttention && sectionChip.visible
-      loops: Animation.Infinite
-      NumberAnimation { from: 0.72; to: 1; duration: 1200; easing.type: Easing.InOutSine }
-      NumberAnimation { from: 1; to: 0.72; duration: 1200; easing.type: Easing.InOutSine }
-    }
+    opacity: sectionChip.needsAttention ? (view.pulseOn ? 1 : 0.72) : 1
     radius: view.radius
     implicitWidth: sectionLabel.implicitWidth + Style.spacing.lg * 2
     implicitHeight: sectionLabel.implicitHeight + Style.spacing.xs * 2
@@ -1335,10 +1335,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     Rectangle { id: dot; width: 8; height: 8; radius: 4; color: sc.tone
-                      SequentialAnimation { running: sc.busy && sc.visible; loops: Animation.Infinite
-                        onRunningChanged: if (!running) dot.opacity = 1
-                        NumberAnimation { target: dot; property: "opacity"; from: 1; to: 0.2; duration: 700 }
-                        NumberAnimation { target: dot; property: "opacity"; from: 0.2; to: 1; duration: 700 } } }
+                      opacity: sc.busy ? (view.pulseOn ? 1 : 0.2) : 1 }
                     // The provider name plus a disclosure caret: grouping
                     // belongs to a provider, the provider is named here, and
                     // WHAT CHANGED already spells "this row expands and
