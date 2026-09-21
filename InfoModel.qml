@@ -296,14 +296,17 @@ Item {
     onTriggered: root.refresh()
   }
 
-  // --- event-driven refresh (on top of the floor) -----------------------------
+  // Event-driven refresh (on top of the floor) -----------------------------
   // The timer above is the floor; a change that means "the desk has something
   // new to say" pulls the next collect forward. Paths are built from HOME /
   // HERMES_HOME / XDG_STATE_HOME — the same resolution collector.ts uses —
   // never a literal home directory, so the watches fire on any machine.
   // FileView watches single files (a directory errors in a tight loop), and a
-  // file that does not exist simply never fires. The 250 ms debounce
-  // coalesces bursts: an agent commits to the DB and its WAL together.
+  // file that does not exist simply never fires. The debounce coalesces bursts
+  // to at most the floor cadence: with a chatty state.db (many agent sessions
+  // writing WAL frames continuously) a short debounce restarts on every write
+  // and runs the collector 20+ times a minute; at 4 s the watch only pulls a
+  // refresh forward after things go quiet, and the floor governs otherwise.
   readonly property string hermesDir: Quickshell.env("HERMES_HOME") || (Quickshell.env("HOME") + "/.hermes")
   readonly property string stateRoot: Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")
   FileView {
@@ -327,7 +330,7 @@ Item {
   }
   Timer {
     id: debounceTimer
-    interval: 250
+    interval: 4000
     repeat: false
     onTriggered: root.refresh()
   }
